@@ -117,7 +117,7 @@ def main(repo, start_date, end_date, token, output_json, verbose):
     else:
         print("\nForce-Merged PRs:")
         for pr in force_merged_prs:
-            formatted_pr_merged_date = pr_merged_at.split("T")[0]
+            formatted_pr_merged_date = pr["merged_at"].split("T")[0]
             print(f"{pr['repo']}#{pr['pr_number']}: {pr['author']} - {pr['title']} @ {formatted_pr_merged_date}")
             print(f"Comment by {pr['commenter']}: {pr['comment_body']}")
             print(f"URL: {pr['url']}\n")
