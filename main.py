@@ -47,8 +47,8 @@ def get_merged_prs(repo, start_date, end_date, token, verbose):
                     if verbose:
                         print(f"Skipping PR {pr_number} for {start_date} <= {merged_at} <= {end_date}")
 
-            if merged_at < start_date:
-                shouldContinue = False
+                if merged_at < start_date:
+                    shouldContinue = False
 
         page += 1
 
