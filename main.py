@@ -16,9 +16,14 @@ def get_merged_prs(repo, start_date, end_date, token, verbose):
     """
     prs = []
     page = 1
+    # GitHub's bare-date `merged:` qualifier has an undocumented timezone, so pad
+    # the server-side window by a day on each side (covers any UTC offset, max
+    # +-14h) and rely on the exact UTC post-filter below for precision.
+    search_start = (start_date - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    search_end = (end_date + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
     query = (
         f"repo:{repo} is:pr is:merged "
-        f"merged:{start_date.strftime('%Y-%m-%d')}..{end_date.strftime('%Y-%m-%d')}"
+        f"merged:{search_start}..{search_end}"
     )
 
     while True:
@@ -39,7 +44,9 @@ def get_merged_prs(repo, start_date, end_date, token, verbose):
             merged_at_str = item.get("pull_request", {}).get("merged_at")
             if not merged_at_str:
                 continue
-            merged_at = datetime.datetime.strptime(merged_at_str, "%Y-%m-%dT%H:%M:%SZ")
+            merged_at = datetime.datetime.strptime(
+                merged_at_str, "%Y-%m-%dT%H:%M:%SZ"
+            ).replace(tzinfo=datetime.timezone.utc)
             # `merged:` is date-granular; re-check exact bounds (start 00:00:00,
             # end 23:59:59) so the window matches the CLI semantics precisely.
             if start_date <= merged_at <= end_date:
@@ -174,11 +181,16 @@ def main(repo, start_date, end_date, token, output_json, verbose, deep):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Find PRs force-merged in a GitHub repository.")
     parser.add_argument("repo", help="GitHub repository in the format 'owner/repo'")
-    parser.add_argument("--startdate", type=lambda d: datetime.datetime.strptime(d, "%Y-%m-%d").replace(hour=0, minute=0, second=0, microsecond=0),
-                        default=(datetime.datetime.now() - datetime.timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0),
-                        help="Start date in YYYY-MM-DD format (default: 30 days ago at 00:00)")
-    parser.add_argument("--enddate", type=lambda d: datetime.datetime.strptime(d, "%Y-%m-%d").replace(hour=23, minute=59, second=59, microsecond=999999),
-                        help="End date in YYYY-MM-DD format (optional, automatically set based on start date if not provided)")
+    parser.add_argument("--startdate",
+                        type=lambda d: datetime.datetime.strptime(d, "%Y-%m-%d").replace(
+                            hour=0, minute=0, second=0, microsecond=0, tzinfo=datetime.timezone.utc),
+                        default=(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).replace(
+                            hour=0, minute=0, second=0, microsecond=0),
+                        help="Start date in YYYY-MM-DD format, interpreted as UTC (default: 30 days ago at 00:00 UTC)")
+    parser.add_argument("--enddate",
+                        type=lambda d: datetime.datetime.strptime(d, "%Y-%m-%d").replace(
+                            hour=23, minute=59, second=59, microsecond=999999, tzinfo=datetime.timezone.utc),
+                        help="End date in YYYY-MM-DD format, interpreted as UTC (optional; auto-set from start date if omitted)")
     parser.add_argument("--token", help="GitHub personal access token (optional)")
     parser.add_argument("--output_json", action="store_true", help="Output results as JSON instead of text")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
