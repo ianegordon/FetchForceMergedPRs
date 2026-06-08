@@ -63,29 +63,56 @@ def get_merged_prs(repo, start_date, end_date, token, verbose):
 
     return prs
 
-def get_comments(repo, pr_number, token):
-    """
-    Fetch all comments for a given PR, following pagination so comments beyond
-    the first page are not missed (per_page max is 100, default 30).
-    """
-    comments = []
+def _get_paginated(url, headers):
+    """GET all pages of a list endpoint (per_page=100) and return the combined list."""
+    results = []
     page = 1
-    headers = {"Authorization": f"token {token}"} if token else {}
-
     while True:
-        url = f"{github_api_url}/repos/{repo}/issues/{pr_number}/comments"
-        params = {"per_page": 100, "page": page}
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params={"per_page": 100, "page": page})
         response.raise_for_status()
         data = response.json()
         if not data:
             break
-        comments.extend(data)
+        results.extend(data)
         if len(data) < 100:  # last page reached
             break
         page += 1
+    return results
 
-    return comments
+def get_comment_sources(repo, pr, token, deep):
+    """
+    Collect every place a FORCE_MERGE marker could appear on a PR. By default
+    this is the PR body (free, already on the search item) and the issue
+    comments. With deep=True it also scans line-level review comments and review
+    summaries, at the cost of two extra paginated requests per PR. Returns a list
+    of {"source", "user", "body"} dicts with bodies normalized to strings.
+    """
+    pr_number = pr["number"]
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    sources = [{
+        "source": "pr_body",
+        "user": (pr.get("user") or {}).get("login"),
+        "body": pr.get("body") or "",
+    }]
+
+    endpoints = [
+        ("issue_comment", f"{github_api_url}/repos/{repo}/issues/{pr_number}/comments"),
+    ]
+    if deep:
+        endpoints += [
+            ("review_comment", f"{github_api_url}/repos/{repo}/pulls/{pr_number}/comments"),
+            ("review",         f"{github_api_url}/repos/{repo}/pulls/{pr_number}/reviews"),
+        ]
+    for source, url in endpoints:
+        for item in _get_paginated(url, headers):
+            sources.append({
+                "source": source,
+                "user": (item.get("user") or {}).get("login"),
+                "body": item.get("body") or "",
+            })
+
+    return sources
 
 def calculate_enddate_if_needed(start_date, end_date):
     """
@@ -101,7 +128,7 @@ def calculate_enddate_if_needed(start_date, end_date):
             return (start_date + datetime.timedelta(days=30)).replace(hour=23, minute=59, second=59, microsecond=999999)
     return end_date
 
-def main(repo, start_date, end_date, token, output_json, verbose):
+def main(repo, start_date, end_date, token, output_json, verbose, deep):
     """
     Main script logic.
     """
@@ -119,17 +146,17 @@ def main(repo, start_date, end_date, token, output_json, verbose):
         pr_number = pr["number"]
         pr_author = pr["user"]["login"]
         pr_merged_at = pr["merged_at"]
-        comments = get_comments(repo, pr_number, token)
 
-        for comment in comments:
-            if "FORCE_MERGE" in comment["body"]:
+        for src in get_comment_sources(repo, pr, token, deep):
+            if "FORCE_MERGE" in src["body"]:
                 force_merged_prs.append({
                     "repo": repo,
                     "pr_number": pr_number,
                     "title": pr["title"],
                     "author": pr_author,
-                    "commenter": comment["user"]["login"],
-                    "comment_body": comment["body"],
+                    "commenter": src["user"],
+                    "comment_body": src["body"],
+                    "source": src["source"],
                     "merged_at": pr_merged_at,
                     "url": pr["html_url"]
                 })
@@ -141,7 +168,7 @@ def main(repo, start_date, end_date, token, output_json, verbose):
         for pr in force_merged_prs:
             formatted_pr_merged_date = pr["merged_at"].split("T")[0]
             print(f"{pr['repo']}#{pr['pr_number']}: {pr['author']} - {pr['title']} @ {formatted_pr_merged_date}")
-            print(f"Comment by {pr['commenter']}: {pr['comment_body']}")
+            print(f"{pr['source']} by {pr['commenter']}: {pr['comment_body']}")
             print(f"URL: {pr['url']}\n")
 
 if __name__ == "__main__":
@@ -155,7 +182,9 @@ if __name__ == "__main__":
     parser.add_argument("--token", help="GitHub personal access token (optional)")
     parser.add_argument("--output_json", action="store_true", help="Output results as JSON instead of text")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
+    parser.add_argument("--deep", action="store_true",
+                        help="Also scan PR review comments and review summaries (two extra API requests per PR)")
 
     args = parser.parse_args()
 
-    main(args.repo, args.startdate, args.enddate, args.token, args.output_json, args.verbose)
+    main(args.repo, args.startdate, args.enddate, args.token, args.output_json, args.verbose, args.deep)
