@@ -4,9 +4,16 @@ import argparse
 import json as json_module
 import calendar
 import sys
+import re
 
 # GitHub API base URL
 github_api_url = "https://api.github.com"
+
+# A FORCE_MERGE directive must lead a line (optional leading whitespace and an
+# optional "/" prefix), matched as a whole token and case-sensitively. This
+# avoids false positives from negations ("do not FORCE_MERGE"), quoted
+# discussion, and compound tokens (FORCE_MERGED, FORCE_MERGE_OFF).
+FORCE_MERGE_MARKER = re.compile(r"^\s*/?FORCE_MERGE\b", re.MULTILINE)
 
 def get_merged_prs(repo, start_date, end_date, token, verbose):
     """
@@ -155,7 +162,7 @@ def main(repo, start_date, end_date, token, output_json, verbose, deep):
         pr_merged_at = pr["merged_at"]
 
         for src in get_comment_sources(repo, pr, token, deep):
-            if "FORCE_MERGE" in src["body"]:
+            if FORCE_MERGE_MARKER.search(src["body"]):
                 force_merged_prs.append({
                     "repo": repo,
                     "pr_number": pr_number,
