@@ -3,53 +3,62 @@ import datetime
 import argparse
 import json as json_module
 import calendar
+import sys
 
 # GitHub API base URL
 github_api_url = "https://api.github.com"
 
 def get_merged_prs(repo, start_date, end_date, token, verbose):
     """
-    Fetch all merged PRs in the given repository within the specified date range.
+    Fetch all PRs merged in `repo` within [start_date, end_date] using the
+    Search API, so merge-date filtering happens server-side. This avoids the
+    /pulls endpoint, which cannot sort by merge date.
     """
     prs = []
     page = 1
+    query = (
+        f"repo:{repo} is:pr is:merged "
+        f"merged:{start_date.strftime('%Y-%m-%d')}..{end_date.strftime('%Y-%m-%d')}"
+    )
 
-    shouldContinue = True
-
-    while shouldContinue:
-        url = f"{github_api_url}/repos/{repo}/pulls"
-        params = {
-            "state": "closed",
-            "sort": "updated",
-            "direction": "desc",
-            "per_page": 100,
-            "page": page
-        }
+    while True:
+        url = f"{github_api_url}/search/issues"
+        params = {"q": query, "per_page": 100, "page": page}
         headers = {"Authorization": f"Bearer {token}"} if token else {}
 
         response = requests.get(url, headers=headers, params=params)
         response.raise_for_status()
         data = response.json()
 
-        if not data:
+        total_count = data.get("total_count", 0)
+        items = data.get("items", [])
+        if not items:
             break
 
-        for pr in data:
-            if pr.get("merged_at"):
-                merged_at = datetime.datetime.strptime(pr["merged_at"], "%Y-%m-%dT%H:%M:%SZ")
-                if start_date <= merged_at <= end_date:
-                    pr_number = pr["number"]
-                    if verbose:
-                        print(f"Adding PR {pr_number} for {start_date} <= {merged_at} <= {end_date}")
-                    prs.append(pr)
-                else:
-                    pr_number = pr["number"]
-                    if verbose:
-                        print(f"Skipping PR {pr_number} for {start_date} <= {merged_at} <= {end_date}")
+        for item in items:
+            merged_at_str = item.get("pull_request", {}).get("merged_at")
+            if not merged_at_str:
+                continue
+            merged_at = datetime.datetime.strptime(merged_at_str, "%Y-%m-%dT%H:%M:%SZ")
+            # `merged:` is date-granular; re-check exact bounds (start 00:00:00,
+            # end 23:59:59) so the window matches the CLI semantics precisely.
+            if start_date <= merged_at <= end_date:
+                item["merged_at"] = merged_at_str  # normalize to the shape main() reads
+                prs.append(item)
+                if verbose:
+                    print(f"Adding PR {item['number']} merged at {merged_at}")
+            elif verbose:
+                print(f"Skipping PR {item['number']} merged at {merged_at} (outside exact window)")
 
-                if merged_at < start_date:
-                    shouldContinue = False
-
+        # Search returns at most 1000 results (10 pages of 100); page 11 would 422.
+        if page * 100 >= min(total_count, 1000):
+            if total_count > 1000:
+                print(
+                    f"WARNING: {total_count} merged PRs match but the Search API "
+                    f"caps results at 1000. Narrow the date range to capture all.",
+                    file=sys.stderr,
+                )
+            break
         page += 1
 
     return prs
