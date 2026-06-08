@@ -65,14 +65,27 @@ def get_merged_prs(repo, start_date, end_date, token, verbose):
 
 def get_comments(repo, pr_number, token):
     """
-    Fetch all comments for a given PR.
+    Fetch all comments for a given PR, following pagination so comments beyond
+    the first page are not missed (per_page max is 100, default 30).
     """
-    url = f"{github_api_url}/repos/{repo}/issues/{pr_number}/comments"
+    comments = []
+    page = 1
     headers = {"Authorization": f"token {token}"} if token else {}
 
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    return response.json()
+    while True:
+        url = f"{github_api_url}/repos/{repo}/issues/{pr_number}/comments"
+        params = {"per_page": 100, "page": page}
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()
+        data = response.json()
+        if not data:
+            break
+        comments.extend(data)
+        if len(data) < 100:  # last page reached
+            break
+        page += 1
+
+    return comments
 
 def calculate_enddate_if_needed(start_date, end_date):
     """
